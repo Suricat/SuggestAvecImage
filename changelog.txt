@@ -1,4 +1,6 @@
-﻿## Version 1.0 (04/06/2016) ##
+﻿## Version 1.1 (06/06/2016) ##
+[+] Les articles les plus récents sont privilégiés pour les suggestions
+## Version 1.0 (04/06/2016) ##
 [+] Suggestion d'articles de la même catégorie avec priorité à ceux ayant des Tags communs avec l'article consulté
 ## Version 0.9 (29/05/2016) ##
 version initiale : suggestion d'articles de la même catégorie

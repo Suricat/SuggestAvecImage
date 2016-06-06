@@ -7,6 +7,28 @@ class SuggestAvecImage extends plxPlugin {
 
   private $_pluginName = 'SuggestAvecImage';
 
+  /*
+  Principe de fonctionnement du plugin si "isCatOnly" n'est pas coché (donc dans le cas par défaut) :
+  Les articles suggérés sont ceux de la même catégorie, mais en plus avec une priorité à ceux qui ont des tags en commun avec l'article consulté.
+  Pour ce faire, le plugin stocke dans un fichier JSON les catégories et tags de chaque article.
+  Ensuite, pour chaque article, il donne 10 points pour les articles de même catégorie et 1 point supplémentaire pour chaque tag en commun.
+  Un tableau de 4 id d'articles ayant le plus de points est ajouté dans le fichier JSON.
+  A chaque mise à jour de catégorie ou de tag d'un article, le fichier JSON est mis à jour...
+
+  * Ajout de points fraîcheur si la date de modification est plus ou moins récente :
+  - de 1 mois : 0.7pt
+  - de 1 an   : 0.5pt
+  - de 2 ans  : 0.3pt
+  - de 3 ans  : 0.2pt
+  La prise en compte de ces points dépend de la fréquence de publication afin d'éviter d'avoir toujours les même articles présenté en cas de faible fréquence de nouveaux articles.
+  Si nombre d'articles avec X,7pt >= 10, alors on pioche des articles parmi ceux-ci.
+  Sinon, si nombre d'articles avec X,5pt ou plus >= 10, alors on pioche des articles parmi ceux-ci.
+  Sinon, si nombre d'articles avec X,3pt ou plus >= 10, alors on pioche des articles parmi ceux-ci.
+  Sinon, si nombre d'articles avec X,2pt ou plus >= 10, alors on pioche des articles parmi ceux-ci.
+  Sinon, on pioche des articles parmi tous les articles recensés.
+  */
+
+
 	/**
 	 * Constructeur de la classe
 	 *
@@ -209,6 +231,7 @@ class SuggestAvecImage extends plxPlugin {
                 $art = $plxMotor->parseArticle(PLX_ROOT.$plxMotor->aConf['racine_articles'].$v);
                 $TCat = explode(',', plxUtils::strCheck($art['categorie']));
                 $TTag = explode(',', plxUtils::strCheck($art['tags']));
+                $Date = plxDate::formatDate(plxUtils::strCheck($art['date_update']), '#num_year(4)-#num_month-#num_day');  
 
                 $this->NettoyageTab($TCat, 0x03);
                 $this->NettoyageTab($TTag, 0x06);
@@ -216,7 +239,7 @@ class SuggestAvecImage extends plxPlugin {
                 if(in_array('draft', $TCat)) continue;
                 
                 // recupere les données de l'article
-                $OIdArt[''.plxUtils::strCheck($art['numero'])] = array('TCat' => $TCat,'TTag' => $TTag);
+                $OIdArt[''.plxUtils::strCheck($art['numero'])] = array('TCat' => $TCat,'TTag' => $TTag, 'Date' => $Date);
               }
         }
 
@@ -301,7 +324,8 @@ class SuggestAvecImage extends plxPlugin {
     // OIdArt2[IdArt2].TTIdArtCatTagPoint = [ [ IdArt1, NbPoint ], [ IdArt2, NbPoint ], ... , [ IdArtN, NbPoint ] ];
     // ...
     // OIdArt2[IdArtN].TTIdArtCatTagPoint = [ [ IdArt1, NbPoint ], [ IdArt2, NbPoint ], ... , [ IdArtN, NbPoint ] ];
-    
+    $DateDuJour = new DateTime('now');
+
     $OIdArt2 = $OIdArt;
     foreach($OIdArt as $ParentKey => $ParentVal)
         {
@@ -326,6 +350,15 @@ class SuggestAvecImage extends plxPlugin {
                     {
                       if(in_array($ParentVal['TTag'][$i], $KidVal['TTag'])) $NbPoint++;
                     }
+
+                // points fraîcheur
+                $DateArt = new DateTime($KidVal['Date']);
+                $interval = $DateDuJour->diff($DateArt);
+                $NbJours = $interval->format('%a');
+                if($NbJours<=   30) $NbPoint+=0.7; else
+                if($NbJours<=  365) $NbPoint+=0.5; else
+                if($NbJours<=365*2) $NbPoint+=0.3; else
+                if($NbJours<=365*3) $NbPoint+=0.2;
                     
                 $TTIdArtCatTagPoint[$index] = array($KidKey, $NbPoint);
                 $index++;
@@ -365,15 +398,17 @@ class SuggestAvecImage extends plxPlugin {
           $IndexDebNbPointIdentique=0;
           $IndexFinNbPointIdentique=0;
           $TTIdArtCatTagPoint = $v['TTIdArtCatTagPoint'];
+          $TIdArtCT = array();
           $TIdArt = array();
           for($i=0; $i<count($TTIdArtCatTagPoint); $i++)
               {
-                $NbPoint2=$TTIdArtCatTagPoint[$i][1];
-                if($NbPoint2==0)
+                // on prend les articles avec le plus de points, indépendamment des points fraîcheur  
+                $NbPoint2=floor($TTIdArtCatTagPoint[$i][1]);
+                if($NbPoint2==0) // n'affiche jamais les articles d'une autre catégorie, même s'il y moins de 5 articles dans la catégorie
                     {
                       $IndexFinNbPointIdentique=$i;
                       break;
-                    }  // n'affiche jamais les articles d'une autre catégorie, même s'il y moins de 5 articles dans la catégorie
+                    }  
                 if($NbPoint1!=0 && $NbPoint1!=$NbPoint2)
                     {
                       $IndexFinNbPointIdentique=$i;
@@ -381,19 +416,45 @@ class SuggestAvecImage extends plxPlugin {
                 $NbPoint1=$NbPoint2;
                 if($i>3 && $IndexFinNbPointIdentique>3) break;
                 $IndexDebNbPointIdentique = $IndexFinNbPointIdentique;
-                array_push($TIdArt, $TTIdArtCatTagPoint[$i][0]);
+                array_push($TIdArtCT, $TTIdArtCatTagPoint[$i]);
               }
               
-          if(count($TIdArt)<=4)
+          if(count($TIdArtCT)<=4)
               {
-                $T4Suggest = $TIdArt;
+                $T4Suggest = $TIdArtCT;
               }
-          else{ $T4Suggest = array_slice($TIdArt, 0, $IndexDebNbPointIdentique);
+          else{ $T4Suggest = array_slice($TIdArtCT, 0, $IndexDebNbPointIdentique);
                 $NbVal = count($T4Suggest);
                 if($IndexFinNbPointIdentique==0) $IndexFinNbPointIdentique = count($TTIdArtCatTagPoint);
-                $TValToRamdomizeOrder = array_slice($TIdArt, $IndexDebNbPointIdentique, $IndexFinNbPointIdentique);
+                $TValToRamdomizeOrder = array_slice($TIdArtCT, $IndexDebNbPointIdentique, $IndexFinNbPointIdentique);
+                // sélection selon les points fraîcheur
+                $PalierPt=0.7; // palier de point
+                $NbArtToAdd=0;
+                for($i=0; $i<count($TValToRamdomizeOrder); $i++)
+                    {
+                      $PalierPtCourant = $TValToRamdomizeOrder[$i][1]-floor($TValToRamdomizeOrder[$i][1]);
+                      if($PalierPtCourant<$PalierPt)
+                          {
+                            if($i>10) 
+                                {
+                                  $NbArtToAdd = $i;
+                                  break;
+                                }
+                            else{ $PalierPt = $PalierPtCourant;
+                                }
+                          }
+                    }
+                if($NbArtToAdd==0)
+                    {
+                      $NbArtToAdd = count($TValToRamdomizeOrder);
+                    }
+                $TValToRamdomizeOrder = array_slice($TValToRamdomizeOrder, 0, $NbArtToAdd);
                 shuffle($TValToRamdomizeOrder);
                 array_splice($T4Suggest, $NbVal, 0, array_slice($TValToRamdomizeOrder, 0, 4-$NbVal));
+              }
+          for($i=0; $i<count($T4Suggest); $i++)
+              {
+                $T4Suggest[$i] = $T4Suggest[$i][0];
               }
           $OIdArt[$k]['T4Suggest'] = $T4Suggest;
         }
@@ -413,10 +474,11 @@ class SuggestAvecImage extends plxPlugin {
           {       
             // Récupère les caractéristiques actuelles de l'article (au moment de l'enregistrement)
             \$TCatNow = \$content['catId'];
-            \$TTagNow = explode(',', plxUtils::cdataCheck(trim(\$content['tags'])));                     
+            \$TTagNow = explode(',', plxUtils::cdataCheck(trim(\$content['tags'])));       
+            \$DateNow = \$content['date_update_year'].'-'.\$content['date_update_month'].'-'.\$content['date_update_day'];              
             \$IsPubli = (isset(\$content['draft']) || isset(\$content['moderate'])) ? 0 : 1;
           
-            \$this->plxPlugins->aPlugins['SuggestAvecImage']->onEditArticle(\$id, \$TCatNow, \$TTagNow, \$IsPubli);
+            \$this->plxPlugins->aPlugins['SuggestAvecImage']->onEditArticle(\$id, \$TCatNow, \$TTagNow, \$DateNow, \$IsPubli);
           }
             ?>";
   }   
@@ -428,7 +490,7 @@ class SuggestAvecImage extends plxPlugin {
   //--- plugin lors de l'enregistrement de l'article si changement de catégorie ou de tag
   //--- OIdArt contient IdArticle, TCat, TTag et T4Suggest--------------------------------
   //---------------------------------------------------------------------------------------
-  public function onEditArticle($IdArt, $TCatNow, $TTagNow, $IsPubli){
+  public function onEditArticle($IdArt, $TCatNow, $TTagNow, $DateNow, $IsPubli){
     $IsT4SuggestToUpdate=0;
 
     $this->NettoyageTab($TCatNow, 0x03); 
@@ -457,12 +519,14 @@ class SuggestAvecImage extends plxPlugin {
                       // Récupère les caractéristiques enregistrées dans OIdArt pour cet article
                       $TCatOld = $OArt['TCat'];
                       $TTagOld = $OArt['TTag'];
+                      $DateOld = $OArt['Date'];
                           
                       // on reconstruit les T4Suggest si les catégories ou les tags ont changé
                       if($TCatNow != $TCatOld ||
-                         $TTagNow != $TTagOld)
+                         $TTagNow != $TTagOld ||
+                         $DateNow != $DateOld)
                             {
-                              $OIdArt[$IdNum] = array('TCat' => $TCatNow, 'TTag' => $TTagNow);
+                              $OIdArt[$IdNum] = array('TCat' => $TCatNow, 'TTag' => $TTagNow, 'Date' => $DateNow);
                               $IsT4SuggestToUpdate=1;
                             }
                     }
@@ -473,7 +537,7 @@ class SuggestAvecImage extends plxPlugin {
                 $IsT4SuggestToUpdate=0;
               }
           else{ // si l'id de l'article n'est pas dans OIdArt, on l'ajoute avec son TCat et son TTag et on reconstruit les T4Suggest
-                $OIdArt[$IdNum] = array('TCat' => $TCatNow, 'TTag' => $TTagNow);
+                $OIdArt[$IdNum] = array('TCat' => $TCatNow, 'TTag' => $TTagNow, 'Date' => $DateNow);
                 $IsT4SuggestToUpdate=1;
               }
         }
